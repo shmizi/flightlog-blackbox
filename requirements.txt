@@ -1,0 +1,15 @@
+# Core (Tier 1)
+pymavlink>=2.4.41
+pandas>=2.1
+numpy>=1.26
+PyYAML>=6.0
+
+# API (Tier 2)
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9
+filelock>=3.13
+
+# Tests
+pytest>=8.0
+httpx>=0.27

@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/*
+!output/.gitkeep
+~$*.xlsx
+
+# Flight logs are shared separately, not committed
+tests/data/*
+!tests/data/.gitkeep
+*.rlog
+

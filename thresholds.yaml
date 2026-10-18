@@ -1,0 +1,75 @@
+# FlightLog Black Box thresholds.
+# Every number the checks use lives here, so tuning needs no code change.
+# "Team-set" values are starting points: run 2-3 clean flights, then set each
+# warning comfortably above the clean maximum and record the final values.
+
+battery:
+  # The log does not store cell count. "auto" reads MOT_BAT_VOLT_MAX (4.2 V/cell), else the
+  # voltage at arming. Pin it to an int, or a list per BAT instance, once you know the pack.
+  cells: auto
+  current_min_a: 1.0       # below this the current sensor is treated as absent
+
+windows:
+  takeoff_alt_m: 0.3       # fallback airborne detection when NOT_LANDED events are missing
+  trim_takeoff_s: 3.0      # skip takeoff transient for tracking checks
+  trim_landing_s: 3.0      # skip landing transient for tracking checks
+  hover_max_climb_ms: 0.25
+  hover_max_tilt_deg: 5.0
+  hover_min_s: 2.0
+  sustain_s: 1.0           # rolling-median window, so single-sample spikes do not trip a check
+  # ArduCopter mode numbers where DAlt is a real altitude target
+  alt_controlled_modes: [2, 3, 4, 5, 6, 7, 9, 13, 15, 16, 17, 20, 21, 22, 23, 24, 27]
+
+validation:
+  min_flight_s: 30         # reject logs with less airborne time than this
+
+checks:
+  vibration:               # 1. VIBE.VibeX/Y/Z, sustained max, m/s^2 (ArduPilot docs)
+    warning: 30
+    critical: 60
+  clipping:                # 2. VIBE.Clip increase while airborne (team-set)
+    warning: 0
+    critical: 100
+  cell_voltage:            # 3. BAT.Volt / cells, sustained min, V (common LiPo practice)
+    warning: 3.5
+    critical: 3.3
+  voltage_sag:             # 4. (BAT.VoltR - BAT.Volt) / cells, sustained max, V (team-set)
+    warning: 0.3
+    critical: 0.5
+  board_supply:            # 5. POWR.Vcc sustained min while armed, V (team-set)
+    warning: 4.8
+    critical: 4.5
+  hover_throttle:          # 6. median CTUN.ThO in hover (team-set; ThH is capped at 0.6875)
+    warning: 0.60
+    critical: 0.75
+  altitude_hold:           # 7. |DAlt - Alt| p95 in altitude-controlled modes, m (team-set)
+    warning: 0.3
+    critical: 0.6
+  attitude_tracking:       # 8. |Des - actual| roll/pitch p95, deg (team-set)
+    warning: 5
+    critical: 10
+  estimator:               # 9. XKF4 test ratios held for hold_s (ArduPilot EKF)
+    warning: 0.8           # FS_EKF_THRESH default
+    critical: 1.0          # measurement rejected
+    hold_s: 1.0
+    fields: [SV, SP, SH]   # SM ignored: no compass on the GPS-denied airframe
+  motor_balance:           # 10. spread of per-motor mean RCOU in hover, us (team-set)
+    warning: 100
+    critical: 200
+    window_s: 5            # means are taken per chunk; the worst chunk is reported
+    fallback_channels: [1, 2, 3, 4]   # used only if SERVOn_FUNCTION params are missing
+  hard_landing:            # 11. at touchdown (team-set)
+    accel_warning_g: 3
+    accel_critical_g: 5
+    descent_warning_ms: 1.0
+    descent_critical_ms: 2.0
+  errors:                  # 12. ERR records while armed (ArduPilot)
+    ignore_subsystems: []  # e.g. [5] if you fly without an RC receiver
+    critical:              # [subsystem, error code or null for any]
+      - [12, null]         # CRASH_CHECK
+      - [16, 2]            # EKFCHECK bad variance
+      - [17, null]         # FAILSAFE_EKFINAV
+      - [25, null]         # THRUST_LOSS_CHECK
+  external_nav:            # 13. longest gap in VISP/VISV/VISO while airborne, s (team-set)
+    warning: 0.2
+    critical: 0.5

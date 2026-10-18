@@ -1,0 +1,201 @@
+{
+  "name": "FlightLog Black Box",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## FlightLog Black Box\n\nBefore activating:\n1. **Drive trigger**: pick your Google Drive credential and set the folder to watch (replace REPLACE_WITH_FOLDER_ID).\n2. **Download log**: same Google Drive credential.\n3. **Analyze log**: the URL assumes n8n runs in Docker and the API on the host (`host.docker.internal`). With `npx n8n`, use `http://localhost:8000`.\n4. Both **Email** nodes: pick your Gmail credential and replace REPLACE_WITH_TEAM_EMAIL.\n\nGoogle OAuth apps in *Testing* mode issue refresh tokens that expire after 7 days: reconnect the credentials right before the demo.",
+        "height": 380,
+        "width": 420
+      },
+      "id": "5c1f0d3e-1a52-4f0e-9a51-6f1e2b7c9d01",
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-120, -420]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "REPLACE_WITH_FOLDER_ID",
+          "mode": "id"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "id": "8a0d4c2e-3b6f-4d1a-b7e2-1c9f5a3e7b02",
+      "name": "Drive trigger",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {
+          "fileName": "={{ $json.name }}"
+        }
+      },
+      "id": "2e7b9f41-6c3d-4a8e-9f10-4b2d8c6a1e03",
+      "name": "Download log",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/analyze?inline=true",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 0
+            }
+          }
+        }
+      },
+      "id": "c4a81e5f-9d27-4b3c-8e6a-7f0b2d4c9a04",
+      "name": "Analyze log",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 0],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Turn the API's base64 attachments into binary fields the Gmail node can attach.\nconst result = $json;\nconst binary = {};\nconst names = [];\n(result.attachments || []).forEach((a, i) => {\n  const key = `attachment_${i}`;\n  binary[key] = { data: a.data, mimeType: a.mimeType, fileName: a.fileName };\n  names.push(key);\n});\nconst { attachments, ...rest } = result;\nreturn { json: { ...rest, attachmentNames: names.join(',') }, binary };"
+      },
+      "id": "7f3e2a91-0b4c-4d6e-a8f2-9c1d5e7b3a05",
+      "name": "Attach reports",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, -100]
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_TEAM_EMAIL",
+        "subject": "={{ $json.email.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.email.body }}",
+        "options": {
+          "appendAttribution": false,
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "={{ $json.attachmentNames }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "e1b5c7d2-4a8f-4e3b-9d6c-2f7a1b5e8c06",
+      "name": "Email debrief",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [960, -100]
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_TEAM_EMAIL",
+        "subject": "[FlightLog] Analysis service offline",
+        "emailType": "text",
+        "message": "=The analysis API could not process {{ $('Download log').item.binary.data.fileName }} after 3 tries, 5 s apart.\n\nError: {{ $json.error ? ($json.error.message || JSON.stringify($json.error)) : 'no response' }}\n\nStart it with: python -m uvicorn api:app --host 0.0.0.0 --port 8000\nThen re-upload the log to the Drive folder.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "9d2c6e4a-7b1f-4c8e-b3a5-0e6f2d9c1b07",
+      "name": "Email: service offline",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [720, 120]
+    }
+  ],
+  "connections": {
+    "Drive trigger": {
+      "main": [
+        [
+          {
+            "node": "Download log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download log": {
+      "main": [
+        [
+          {
+            "node": "Analyze log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze log": {
+      "main": [
+        [
+          {
+            "node": "Attach reports",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email: service offline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach reports": {
+      "main": [
+        [
+          {
+            "node": "Email debrief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

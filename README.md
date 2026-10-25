@@ -1,180 +1,211 @@
 # FlightLog Black Box
 
-Turns an ArduPilot `.bin` DataFlash log into a Healthy / Warning / Critical verdict with reasons.
+**Automated health checks for ArduPilot drone flight logs.** Drop a log into a folder and, within a minute,
+the team gets an email with a Healthy / Warning / Critical verdict, the reasons, what to fix, and an updated
+logbook of every flight. Nobody has to open a graph.
 
-**New here?** Read [PROJECT_GUIDE.md](PROJECT_GUIDE.md): the whole project and step-by-step setup,
-including email and n8n. [HANDOFF.md](HANDOFF.md) covers what is done, what is next and the
-future scope.
-This is the Tier 1 core from the CA3 plan: validation (E1–E5), parsing, flight windowing,
-16 checks, the verdict and recommended actions, with the API, n8n automation, Excel logbook and
-Streamlit dashboard built on top. (The PowerPoint debrief is not built.)
+![How FlightLog Black Box works](docs/figures/workflow_proposed.png)
 
-## Setup
+Built for the CA3 Software Automation Lab (project 29) by Aarushi Rudra, Zahra Modi and Harsh Narain,
+around the drone our team flies for NIDAR.
+
+---
+
+## Why
+
+After every test flight, someone used to open the log in Mission Planner or UAV Log Viewer, click through
+vibration, battery, estimator and motor graphs, and decide by eye whether the drone was fit to fly again.
+That review was slow, depended on who was looking, used no fixed limits and left no record, so problems that
+build up over several flights (a loosening prop, an ageing battery) went unnoticed.
+
+## What it does
+
+- **16 health checks** on every flight, each against a limit in [`thresholds.yaml`](thresholds.yaml).
+- **A verdict with reasons:** every finding has the measured value, the limit, when it happened and what to do.
+- **Suggested fixes:** a Mission Planner `.param` file with corrected values, ready to review and load.
+- **Pre-flight GO / NO-GO:** drop the drone's parameter file in before flying.
+- **Fleet history:** an Excel logbook, trends across flights, and a comparison with the same drone's earlier
+  flights.
+- **Tamper-evident ledger:** a hash chain over every processed file, so past verdicts can't be quietly edited.
+- **Hands-free:** n8n watches the folder and emails the team; a Streamlit dashboard shows the same results.
+
+<p align="center">
+  <img src="docs/figures/dashboard_analyse.png" width="60%" alt="Dashboard analysing a real flight">
+  <img src="docs/figures/email.png" width="34%" alt="The email the team receives">
+</p>
+
+## Quick start
+
+Windows, Python 3.11+ and Node.js (for n8n).
 
 ```bash
 py -3.11 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-## Use
+Check a log straight away, no email or n8n needed:
 
 ```bash
-.venv\Scripts\python -X utf8 -m blackbox path\to\00000042.BIN
-.venv\Scripts\python -m blackbox path\to\00000042.BIN --json
+.venv\Scripts\python -X utf8 -m blackbox path\to\flight.bin
 ```
 
-```python
-from blackbox import analyze
-res = analyze("00000042.BIN", known_hashes={"<sha256>": "2026-10-18"})
-res.status      # Analysed / Rejected / Duplicate / No flight
-res.verdict     # Healthy / Warning / Critical (Analysed only)
-res.incomplete  # E2: analysed, but cut short or corrupt
-res.findings    # Warning and Critical checks, Critical first
-res.to_dict()   # JSON-ready, for FastAPI and the logbook
-```
-
-`known_hashes` is the SHA-256 → date map from the logbook's Flights sheet (E4).
-
-## Log types
-
-The file type is detected from its content, not its extension.
-
-| File | Source | Result |
-|---|---|---|
-| `.bin` | DataFlash log from the SD card | Full analysis |
-| `.tlog` | Ground-station telemetry (Mission Planner) | Analysed with reduced detail (`source: "telemetry"`) |
-| `.rlog` | Raw radio-link capture, no timestamps | Rejected (E1): upload the matching `.tlog` or `.bin` |
-| `.param` | Parameter list saved from Mission Planner / QGroundControl | Pre-flight GO / NO-GO |
-
-How telemetry differs from a `.bin`:
-
-- MAVLink arrives at only 2–4 Hz, so spikes shorter than about a second can be missed.
-- There is no IMU data, so hard landing is judged by descent rate alone.
-- Errors come from STATUSTEXT messages ("Potential Thrust Loss", "Crash"…) rather than ERR records.
-- External navigation (check 13) is not in the telemetry stream.
-- `.bin` logs get `flight_date` from GPS time; `.tlog` files from the ground station's clock.
-- On the 2026-09-28 flight recorded both ways, the `.tlog` and `.bin` gave the same verdict and nearly
-  identical values.
-
-## What each email contains
-
-- **Verdict banner, findings table and recommended actions** (HTML, with a plain-text copy).
-- **Earlier flights:** the same drone is recognised by its board's CPU serial number, and the email
-  compares vibration, lowest cell voltage, sag, battery resistance, hover throttle, motor imbalance,
-  altitude error and compass interference with its last 5 flights.
-- **`flight_path.kml`:** the flight on a map (Google Earth), with each finding pinned where it happened.
-  Only when the log has GPS.
-- **`suggested_fixes.param`:** corrected parameter values for the findings (battery failsafe, notch filter),
-  in Mission Planner's `NAME,VALUE` format with the reason above each line. Review before loading.
-- `result.json` is stored and downloadable for software (logbook, debrief, Streamlit) but not emailed.
-
-**Pre-flight GO / NO-GO:** drop a `.param` file saved from Mission Planner (Config > Full Parameter List >
-Save to file) into the folder. It checks the battery failsafe, battery monitor, radio failsafe, pre-arm
-checks, logging and notch filter, and emails GO, GO with warnings, or NO-GO with a fix file. The 24-09
-crash drone's own parameters give NO-GO.
-
-**Tamper-evident ledger:** each processed log's entry in `output/processed.json` includes a hash of the
-previous entry, so editing, deleting or reordering a record breaks the chain. `GET /ledger` checks it.
-
-## Excel logbook and dashboard
-
-**`output/flight_logbook.xlsx`** is rebuilt after every processed file and attached to every email
-(also `GET /logbook`). Sheets: **Flights** (one row per flight, one coloured column per check),
-**Findings**, **Exceptions** (E1, E2, E4, E5), **Pre-flight** and **Trends** (key numbers per flight
-with four charts). It is generated from `output/logbook.jsonl` each time, because openpyxl drops
-charts when it edits an existing workbook. **E6:** if the logbook is open in Excel, the save is retried
-3 times, 10 s apart, then written to `flight_logbook_pending.xlsx`; the next save includes everything.
-
-**Dashboard** (`app.py`, Streamlit, started by `start.ps1` at http://localhost:8501):
-
-- **Analyse a log:** upload a `.bin`, `.tlog` or `.param` (or pick a file already in the watched
-  folder) and see the verdict, findings, recommended actions, the comparison with earlier flights,
-  battery/vibration/altitude/motor graphs, the flight path on a map, and downloads. When n8n is running,
-  an upload is saved into the watched folder, so it is logged and emailed like any dropped file. If n8n
-  is off it goes straight to the API (logged, no email); with neither running it is only analysed.
-- **Fleet logbook:** flight counts by verdict, ledger status, all flights, trend charts across flights,
-  exceptions and pre-flight checks, and a download of the Excel logbook.
-
-```bash
-.venv\Scripts\python -m streamlit run app.py
-```
-
-## API
-
-```bash
-.venv\Scripts\python -m uvicorn api:app --host 0.0.0.0 --port 8000
-```
-
-| Endpoint | Does |
-|---|---|
-| `POST /analyze` | Multipart field `file`. Returns status, verdict, ready-made `email` (subject and body), `files` (download URLs) and the full `result`. Add `?inline=true` to also get the report files base64-encoded in `attachments`. |
-| `GET /files/{flight_id}/{name}` | Downloads one report file. |
-| `GET /ledger` | Verifies the tamper-evident chain of processed logs. |
-| `GET /health` | Liveness check. |
-
-- **What is stored:** analysed and bench logs go in `output/<flight_id>/` with `summary.txt` and `result.json`. Rejected files and duplicates are not stored.
-- **Repeat uploads (E4):** `output/processed.json` maps each SHA-256 to its first processing. The same file
-  uploaded again is analysed in full with a note ("already analysed on …"), but gets no second ledger
-  entry or history line, so nothing is counted twice.
-- **Concurrency:** requests are serialised by a file lock, so two copies of one log uploaded together count once.
-- **Configuration:** set `FLIGHTLOG_OUTPUT_DIR` to move the output folder.
-
-## n8n workflow
-
-n8n runs locally through npx: nothing is installed globally, and its data lives in
-`%USERPROFILE%\.n8n`. No Google Cloud project is needed. Logs come in through a watched folder and
-results go out through Gmail with an App Password.
-
-One-time setup. It asks for your Gmail address, the recipients and the App Password, then
-imports and switches on the workflow:
+For the full automation, set up email once. It asks for your Gmail address, who should get the emails and a
+[Gmail App Password](https://myaccount.google.com/apppasswords), then imports and switches on the n8n workflow:
 
 ```bash
 .venv\Scripts\python scripts\setup_n8n.py
 ```
 
-Start the API and n8n, each in its own window:
+Then, every time:
 
 ```bash
 powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
-Then drop a `.bin` or `.tlog` into `flight-logs\`. The editor runs at http://localhost:5678; it
-asks for an owner account the first time and is optional.
+This opens three windows: the API, n8n and the dashboard (http://localhost:8501). Wait until n8n has started
+(a few minutes on the first run), then drop a `.bin`, `.tlog` or `.param` into `flight-logs\` or upload it on
+the dashboard. Close the three windows to stop.
 
-`start.ps1` enables n8n's folder-watch node, which n8n 2.x disables by default
-(`NODES_EXCLUDE`; command execution stays disabled). It also restricts n8n's file access to the
-watched folder (`N8N_RESTRICT_FILE_ACCESS_TO`). The API URL is `http://127.0.0.1:8000`, not
-`localhost`: Node 24 resolves `localhost` to IPv6 `::1`, where uvicorn is not listening.
+New to the project? [PROJECT_GUIDE.md](PROJECT_GUIDE.md) walks through everything step by step, and
+[HANDOFF.md](HANDOFF.md) lists what is done and what comes next.
 
-To check the workflow against n8n's own node definitions after editing it:
+## How it works
 
-```bash
-node n8n/validate_workflow.js %LOCALAPPDATA%\npm-cache\_npx\<hash>\node_modules n8n/flightlog_workflow.json
+One Python function, `analyze(log_path)`, does all the work. n8n and the dashboard are two ways of calling it,
+so a folder drop and an upload always give the same result.
+
+1. **Validate.** The file type is read from its bytes, not its name, so a renamed photo is rejected and a log
+   saved without its extension still works.
+2. **Parse.** `.bin` logs are read with pymavlink; `.tlog` messages are mapped onto the same tables.
+3. **Split into flight windows:** armed, airborne, steady hover, and airborne minus the takeoff and landing
+   transients. Bench time and transients would otherwise raise false alarms.
+4. **Run the 16 checks,** each only in its own window and per sensor (several IMUs, batteries or EKF cores are
+   checked separately and the worst is reported).
+5. **Decide:** any Critical makes the flight Critical, any Warning makes it Warning, otherwise Healthy. A check
+   whose data is missing shows Not available and doesn't count.
+6. **Advise:** linked causes first (a collapsing battery explains the thrust loss and the hard landing), then
+   one action per finding, the `.param` fixes and the map.
+
+![Flight windows on a real flight](docs/figures/windows.png)
+
+### Log types
+
+| File | Source | Result |
+|---|---|---|
+| `.bin` | DataFlash log from the SD card | Full analysis |
+| `.tlog` | Ground-station telemetry (Mission Planner) | Analysed with reduced detail |
+| `.rlog` | Raw radio capture, no timestamps | Rejected, with what to upload instead |
+| `.param` | Parameter list from Mission Planner or QGroundControl | Pre-flight GO / NO-GO |
+
+Telemetry arrives at only 2–4 Hz, so spikes shorter than about a second can be missed, the hard-landing check
+uses descent rate only, and errors come from STATUSTEXT messages instead of ERR records.
+
+### The 16 checks
+
+| # | Check | Warning / Critical |
+|---|---|---|
+| 1 | Vibration (VIBE X/Y/Z, sustained) | > 30 / > 60 m/s² |
+| 2 | Accelerometer clipping while airborne | > 0 / > 100 |
+| 3 | Cell voltage under load | < 3.5 / < 3.3 V |
+| 4 | Voltage sag per cell | > 0.3 / > 0.5 V |
+| 5 | Board supply (POWR.Vcc) | < 4.8 / < 4.5 V |
+| 6 | Hover throttle | > 0.60 / > 0.75 |
+| 7 | Altitude hold, 95th-percentile error | > 0.3 / > 0.6 m |
+| 8 | Attitude tracking, 95th-percentile error | > 5 / > 10° |
+| 9 | Estimator (EKF test ratio held 1 s) | > 0.8 / > 1.0 |
+| 10 | Motor balance, worst 5 s | > 100 / > 200 µs |
+| 11 | Hard landing (impact, descent rate) | > 3 g or 1 m/s / > 5 g or 2 m/s |
+| 12 | Errors and failsafes while armed | any / crash, EKF, thrust loss |
+| 13 | External navigation gaps | > 0.2 / > 0.5 s |
+| 14 | Battery settings against the pack fitted | mismatch: Warning |
+| 15 | Vibration spectrum (FFT) against the notch filter | peak missed: Warning |
+| 16 | Compass interference from battery current | > 30 / > 60 % |
+
+Vibration, EKF and compass limits follow the ArduPilot documentation; the rest are team-set starting values,
+to be tuned on two or three clean flights.
+
+### What the team receives
+
+- **The email:** verdict banner, findings table, recommended actions, comparison with this drone's last five
+  flights, and what passed or wasn't available. HTML with a plain-text copy.
+- **`suggested_fixes.param`:** corrected parameters, each with its reason. Review before loading.
+- **`flight_path.kml`:** the flight in Google Earth, with each finding pinned where it happened (GPS logs only).
+- **`flight_logbook.xlsx`:** sheets Flights, Findings, Exceptions, Pre-flight and Trends. It's rebuilt from
+  `output/logbook.jsonl` on every save, because openpyxl drops charts when it edits a workbook.
+
+![The Excel logbook](docs/figures/logbook_flights.png)
+
+The dashboard's **Analyse a log** tab shows the same report with graphs and a map. Uploads go into the watched
+folder when n8n is running, so they're logged and emailed like any dropped file. The **Fleet logbook** tab
+shows every flight, trends across flights, exceptions, pre-flight checks and the ledger status.
+
+## Exception handling
+
+| | Scenario | What happens |
+|---|---|---|
+| E1 | Not a flight log | Rejected; the email says why |
+| E2 | Corrupt or truncated log | Analysed and marked Incomplete; rejected if under 30 s of flight remains |
+| E3 | Message types missing | That check is Not available, with the logging option to enable |
+| E4 | Same file uploaded again | Analysed again with a note, counted once (matched by SHA-256) |
+| E5 | Bench log, never armed | Classed No flight |
+| E6 | Logbook open in Excel | 3 tries, 10 s apart, then `flight_logbook_pending.xlsx` |
+| E7 | Analysis service down | n8n tries 3 times, then emails "service offline" |
+
+## Results on our real logs
+
+28 files from our quadcopter: 3 `.bin`, 13 `.tlog` and 12 `.rlog`. Six flight logs were analysed (5 Critical,
+1 Warning), nine telemetry logs were ground sessions, and the `.rlog` files were rejected. The main problems
+were the battery and its settings: the low-battery failsafe was set far too low on every flight.
+
+![Every check on every real flight](docs/figures/results_matrix.png)
+
+## Use it from Python
+
+```python
+from blackbox import analyze
+
+res = analyze("flight.bin")
+res.status      # Analysed / Rejected / No flight / Pre-flight check
+res.verdict     # Healthy / Warning / Critical (GO / GO with warnings / NO-GO for .param files)
+res.findings    # Warning and Critical checks, Critical first
+res.actions     # recommended actions, most important first
+res.to_dict()   # JSON-ready
 ```
 
-`<hash>` is the npx cache folder that contains `node_modules\n8n`.
+## API
 
-The flow is:
+```bash
+.venv\Scripts\python -m uvicorn api:app --host 127.0.0.1 --port 8000
+```
 
-1. **Watch log folder** fires when a new file appears in `flight-logs\`.
-2. **Read log** reads the file.
-3. **Analyze log** POSTs the file to `/analyze?inline=true`, one log at a time. It retries 3 times, 5 s apart.
-4. **Attach reports** (Code node) turns the base64 reports into attachments.
-5. **Email debrief** (SMTP via Gmail) sends the email.
+| Endpoint | Does |
+|---|---|
+| `POST /analyze` | Upload a log (multipart field `file`). Returns the verdict, the email text, file links and the full result; `?inline=true` adds the attachments base64-encoded. |
+| `GET /files/{flight_id}/{name}` | Download one report file. |
+| `GET /logbook` | Download the Excel logbook. |
+| `GET /ledger` | Recompute the hash chain and report whether it is intact. |
+| `GET /health` | Liveness check. |
 
-If the API still fails after the retries, the error branch sends "Analysis service offline" (E7).
+Requests are serialised by a file lock, so two copies of one log uploaded together count once. Results go to
+`output/` (set `FLIGHTLOG_OUTPUT_DIR` to move it).
 
-`n8n/flightlog_workflow.json` is a template: `setup_n8n.py` fills in `__WATCH_FOLDER__`,
-`__API_URL__`, `__FROM_EMAIL__` and `__TO_EMAIL__`. The older Google Drive + Gmail OAuth version is
-kept as `n8n/flightlog_workflow_gdrive.json` (see PROJECT_GUIDE §11).
+## n8n workflow
 
-**Tested end to end** on a separate n8n instance with a local test mail server:
-- a `.bin` dropped into the folder gave "Critical" with both attachments
-- a `.tlog` gave "Critical", marked as telemetry
-- an `.rlog` gave "Rejected"
-- with the API stopped, the offline email was sent
+![The n8n workflow](docs/figures/n8n_workflow.png)
 
-Three files dropped at once gave three emails in about 5 s.
+[`n8n/flightlog_workflow.json`](n8n/flightlog_workflow.json) is a template that `setup_n8n.py` fills in with
+your folder, API address and email addresses. n8n runs through `npx` (nothing is installed globally) and keeps
+its data in `%USERPROFILE%\.n8n`; the Gmail App Password is stored there, encrypted, and never in this
+repository.
+
+Things that matter on Windows:
+
+- `start.ps1` enables n8n's folder-watch node, which n8n 2.x disables by default, and limits n8n's file access to
+  the watched folder. Command execution stays disabled.
+- The watcher polls and waits for writes to finish, so a file still being copied isn't read half-written.
+- The API address is `http://127.0.0.1:8000`, not `localhost`: Node 24 resolves `localhost` to IPv6 `::1`.
+
+The older Google Drive version is kept as `n8n/flightlog_workflow_gdrive.json`.
 
 ## Tests
 
@@ -182,38 +213,60 @@ Three files dropped at once gave three emails in about 5 s.
 .venv\Scripts\python -m pytest -q
 ```
 
-Scenarios T1–T8 run on synthetic DataFlash logs from `tests/dflog.py`, which uses ArduPilot's real
-message formats. Put real logs in `tests/data/` as `T1_clean.bin`, `T2_vibration.bin`,
-`T3_battery.bin` and `T4_motor_fail.bin`, and the matching real-log tests run too.
+88 tests: 83 run on synthetic DataFlash and telemetry logs written by [`tests/dflog.py`](tests/dflog.py) and
+`tests/tlogsim.py`, so fault scenarios (a weak motor, a sagging battery, a truncated log) need no drone. The other
+5 run when real logs are placed in `tests/data/` as `T1_clean.bin`, `T2_vibration.bin`, `T3_battery.bin` and
+`T4_motor_fail.bin`.
 
-## Differences from the plan
+## Project layout
 
-- **Flight windows.** Checks look only at armed or airborne time, from EV/ARM events
-  (NOT_LANDED, LAND_COMPLETE_MAYBE). Time on the bench (USB power, no RC receiver) and
-  takeoff/landing transients are ignored.
-- **Per-instance evaluation.** VIBE, IMU, BAT and XKF4 are checked per sensor/core and the worst
-  one is reported.
-- **Cell count** defaults to `auto`: it reads `MOT_BAT_VOLT_MAX`, else the voltage at arming.
-  Pin it in `thresholds.yaml` once you know the pack.
-- **Check 5** shows Not available on boards that do not measure Vcc (e.g. BOTWINGF405).
-- **Check 4** uses `VoltR - Volt`, ArduPilot's resting-voltage estimate, instead of an undefined
-  baseline.
-- **Check 6** uses median `ThO` in hover, because ArduPilot caps the learned `ThH` at 0.6875, so a
-  0.75 limit on it could never fire.
-- **Check 7** runs only in altitude-controlled modes.
-- **Check 10** reads motor channels from `SERVOn_FUNCTION` and reports the worst 5 s chunk, so a
-  motor that fails mid-flight is not averaged away.
-- **Check 11** looks at touchdown, not "5 s before disarm". With `DISARM_DELAY` at its default of
-  10 s, those 5 s are on the ground. It combines peak acceleration with descent rate.
-- **Check 12** ignores resolved errors (ECode 0) and errors raised before arming.
-- **Check 13** is new: the longest gap in the Jetson's VISP/VISV/VISO data. It shows Not available
-  when the log has none.
-- **Parsing** opens `DFReader_binary` directly. `mavutil.mavlink_connection` picks the reader by file
-  extension and would misread an upload saved under a temp name.
-- **E2** is detected by "log ends while armed" or skipped corrupt bytes. A cut-off file does not
-  raise an error, so a parser exception is not a usable signal.
+```
+blackbox/           the analysis package
+  validate.py         file type by content (E1) and SHA-256
+  parse.py, tlog.py   .bin and .tlog into the same tables
+  windows.py          armed / airborne / hover windows
+  checks.py           the 16 checks
+  pipeline.py         analyze(): validate, parse, check, verdict
+  advice.py           recommended actions
+  preflight.py        GO / NO-GO from a .param file
+  exports.py          .param fixes and KML map
+  history.py          comparison with earlier flights
+  report.py           email and summary text
+  logbook.py          Excel logbook
+api.py              FastAPI service
+app.py              Streamlit dashboard
+n8n/                workflow template and validator
+scripts/            setup_n8n.py, start.ps1
+tests/              pytest suite and synthetic log writers
+docs/               presentation, LaTeX report and figures
+thresholds.yaml     every limit
+```
+
+## Design notes
+
+- **Parsing** opens `DFReader_binary` directly: `mavutil.mavlink_connection` picks its reader by file extension
+  and would misread an upload saved under a temporary name.
+- **Cell count** defaults to `auto`: it reads `MOT_BAT_VOLT_MAX` unless that disagrees with the voltage at
+  arming (our logs had a 6S setting on a 3S pack). Pin it in `thresholds.yaml` once you know the pack.
+- **Check 4** uses ArduPilot's resting-voltage estimate (`VoltR - Volt`) on `.bin` logs.
+- **Check 6** uses the median throttle output in hover, because ArduPilot caps the learned `ThH` at 0.6875.
+- **Check 10** reads motor channels from `SERVOn_FUNCTION` and uses the worst 5 s chunk, so a motor that fails
+  mid-flight isn't averaged away.
+- **Check 11** looks at touchdown, not "5 s before disarm", which with the default `DISARM_DELAY` is on the ground.
+- **Check 12** ignores resolved errors and errors raised before arming or after disarming.
+- **E2** is detected by a log that ends while armed or skipped corrupt bytes, because a cut-off file doesn't
+  raise an error.
+
+## Limitations and next steps
+
+- Reads ArduPilot logs only; PX4 `.ulg` support would be next.
+- Team-set limits need tuning per airframe.
+- Recommendations are rules: they link only the causes they were written for.
+- Planned: a PowerPoint debrief per flight, ESC telemetry checks, and anomaly detection once there are enough
+  healthy flights to learn from.
 
 ## Presentation and report
 
-`docs/` holds the presentation (`FlightLog_Black_Box.pptx`), the LaTeX report (`docs/report/report.tex`)
-and the figures both use, drawn from the real logs. See `docs/README.md` to rebuild them.
+[`docs/`](docs) has the presentation (`FlightLog_Black_Box.pptx`), the LaTeX report
+([`docs/report/report.tex`](docs/report/report.tex)) and the figures they use, all drawn from the real logs.
+[`docs/README.md`](docs/README.md) explains how to rebuild them.

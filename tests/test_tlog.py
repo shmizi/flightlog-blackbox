@@ -1,4 +1,4 @@
-"""Telemetry (.tlog) support and .rlog rejection."""
+﻿"""Telemetry (.tlog) support and .rlog rejection."""
 
 import pytest
 
@@ -43,7 +43,7 @@ def test_clean_tlog_is_healthy_with_reduced_detail_note(make_tlog, cfg):
     assert res.flight_date.startswith("2026-09-21")
     assert res.firmware.startswith("ArduCopter V4.7.0")
     assert any("reduced detail" in n for n in res.notes)
-    assert "6S from MOT_BAT_VOLT_MAX" in check(res, 3).detail
+    assert "6S pack (cell count from MOT_BAT_VOLT_MAX)" in check(res, 3).detail
     assert check(res, 5).status == Status.NOT_AVAILABLE       # POWER_STATUS.Vcc = 0
     assert check(res, 11).unit == "m/s"                       # no IMU: descent rate only
     assert check(res, 13).status == Status.NOT_AVAILABLE
@@ -95,7 +95,7 @@ def test_random_bytes_are_not_mavlink(tmp_path):
 def test_stale_cell_param_loses_to_voltage(make_tlog, cfg, tmp_path):
     # MOT_BAT_VOLT_MAX says 6S (25.2 V) but a 3S pack is fitted: trust the measured voltage.
     from blackbox.config import cells_for
-    assert cells_for(cfg, 0, {"MOT_BAT_VOLT_MAX": 25.2}, 12.3) == (3, "voltage at arming (set cells in thresholds.yaml to be sure)")
+    assert cells_for(cfg, 0, {"MOT_BAT_VOLT_MAX": 25.2}, 12.3) == (3, "voltage at arming; pin it in thresholds.yaml")
     assert cells_for(cfg, 0, {"MOT_BAT_VOLT_MAX": 25.2}, 24.9)[0] == 6
 
 

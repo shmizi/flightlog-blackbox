@@ -1,8 +1,8 @@
-# FlightLog Black Box: Project Guide
+﻿# FlightLog Black Box: Project Guide
 
 The whole project in one place: what it does, how it is built, and how to run it on your own PC,
-including Google sign-in and n8n. Read it top to bottom the first time; after that, use the
-headings as a checklist.
+including email and n8n. Read it top to bottom the first time; after that, use the headings as a
+checklist.
 
 ---
 
@@ -11,18 +11,18 @@ headings as a checklist.
 After every test flight someone used to open the ArduPilot log in Mission Planner and judge the
 graphs by eye. FlightLog Black Box does that automatically:
 
-> Drop a flight log into a Google Drive folder. About a minute later the team gets an email with
-> a **Healthy / Warning / Critical** verdict, the reasons and the report files.
+> Drop a flight log into a folder. Seconds later the team gets an email with a
+> **Healthy / Warning / Critical** verdict, the reasons and the report files.
 
 ```
-Google Drive folder ──► n8n ──► FastAPI (api.py) ──► blackbox.analyze() ──► verdict + reports
-   (new log file)       │                                                        │
-                        └──────────────── Gmail email with attachments ◄─────────┘
+flight-logs\ folder ──► n8n ──► FastAPI (api.py) ──► blackbox.analyze() ──► verdict + reports
+  (new log file)        │                                                        │
+                        └────────────── email (Gmail) with attachments ◄─────────┘
 ```
 
-- **n8n** watches the Drive folder, downloads each new file, sends it to the API and emails the result.
+- **n8n** watches the folder, reads each new file, sends it to the API and emails the result.
 - **api.py** (FastAPI) receives the file, runs the analysis and returns JSON plus report files.
-- **blackbox/** (Python) does the actual work: validation, parsing, 13 health checks and the verdict.
+- **blackbox/** (Python) does the actual work: validation, parsing, 16 health checks, the verdict and recommended actions.
 
 ---
 
@@ -35,17 +35,28 @@ flightlog-blackbox/
 │   ├── parse.py           .bin (DataFlash) → tables
 │   ├── tlog.py            .tlog (telemetry) → the same tables, reduced detail
 │   ├── windows.py         armed / airborne / hover / altitude-hold time windows
-│   ├── checks.py          the 13 health checks
+│   ├── checks.py          the 16 health checks
+│   ├── advice.py          recommended actions for the findings
+│   ├── exports.py         flight_path.kml and suggested_fixes.param
+│   ├── history.py         comparison with the same drone's earlier flights
+│   ├── preflight.py       GO / NO-GO from a .param file before flying
+│   ├── logbook.py         the Excel flight logbook (Flights, Findings, Exceptions, Pre-flight, Trends)
 │   ├── verdict.py         Healthy / Warning / Critical
 │   ├── pipeline.py        analyze(log_path): the one entry point
 │   ├── report.py          summary text and email
 │   └── __main__.py        command line: python -m blackbox LOG
-├── api.py                 FastAPI: POST /analyze, GET /files/...
+├── api.py                 FastAPI: POST /analyze, GET /files/..., /logbook, /ledger
+├── app.py                 Streamlit dashboard
 ├── thresholds.yaml        every limit the checks use (tune here, not in code)
 ├── n8n/
-│   ├── flightlog_workflow.json   import this into n8n
-│   └── validate_workflow.js      checks the workflow against n8n's node definitions
-├── tests/                 pytest: 46 tests on synthetic logs, plus real-log tests
+│   ├── flightlog_workflow.json         the workflow: folder → API → email (template)
+│   ├── flightlog_workflow_gdrive.json  alternative: Google Drive → API → Gmail (needs Google Cloud)
+│   └── validate_workflow.js            checks a workflow against n8n's node definitions
+├── scripts/
+│   ├── setup_n8n.py       one-time setup: folder, email password, import, switch on
+│   └── start.ps1          starts the API, n8n and the dashboard in three windows
+├── flight-logs/           the watched folder, created by setup (not in git)
+├── tests/                 pytest: 88 tests on synthetic logs, plus real-log tests
 │   ├── dflog.py           writes synthetic .bin logs
 │   ├── tlogsim.py         writes synthetic .tlog / .rlog files
 │   └── data/              put real logs here (not in git)
@@ -80,6 +91,9 @@ it Warning; "Not available" (the log lacks that data) does not change the verdic
 | 11 | Hard landing | impact g and descent rate at touchdown | > 3 g / 1 m/s | > 5 g / 2 m/s |
 | 12 | Errors and failsafes | ERR records while armed | any | crash, EKF, thrust loss |
 | 13 | External navigation gaps | VISP/VISV/VISO gaps | > 0.2 s | > 0.5 s |
+| 14 | Configuration | battery parameters vs the pack fitted | any mismatch | – |
+| 15 | Vibration spectrum | FFT of IMU batch samples vs the harmonic notch | peak the notch misses | – |
+| 16 | Compass interference | field change with current, % of Earth's field | > 30% | > 60% |
 
 All limits live in `thresholds.yaml`. Vibration and EKF limits come from the ArduPilot docs; the
 rest are team-set starting values to tune on clean flights.
@@ -91,10 +105,11 @@ rest are team-set starting values to tune on clean flights.
 | `.bin` from the SD card | Full analysis |
 | `.tlog` from Mission Planner | Analysed with reduced detail (2–4 Hz, no impact data) |
 | `.rlog` | Rejected: no timestamps; use the matching `.tlog` |
+| `.param` | Pre-flight GO / NO-GO check of the parameters |
 | Anything else | Rejected as "not an ArduPilot log" |
 
 **Exceptions handled:** E1 not a log · E2 truncated or corrupt (analysed, marked Incomplete) ·
-E3 missing messages (check shows Not available) · E4 duplicate upload · E5 never armed ·
+E3 missing messages (check shows Not available) · E4 repeat upload (analysed again, flagged with a note) · E5 never armed ·
 E7 API offline (n8n retries, then emails). E6 (logbook open in Excel) belongs to the Excel
 logbook, which is not built yet.
 
@@ -144,7 +159,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 
 ## 5. Check that it works
 
-Run the tests (about 25 seconds; "46 passed, 5 skipped" is correct, the skips need real logs):
+Run the tests (about 25 seconds; "83 passed, 5 skipped" is correct, the skips need real logs):
 
 ```bash
 .venv\Scripts\python -m pytest -q
@@ -160,160 +175,129 @@ You get the verdict and one line per check. Add `--json` for the full result.
 
 ---
 
-## 6. Start the API
+## 6. Set up the automation (once, about 5 minutes)
 
-Open a terminal in `flightlog-blackbox` and run:
+No Google Cloud project is needed. Logs come in through a folder on your PC, and results go out
+through Gmail using an **App Password**.
+
+**6.1 Make a Gmail App Password.** In the Gmail account the emails should come *from*:
+
+1. Go to https://myaccount.google.com/security and turn on **2-Step Verification** if it is off.
+2. Go to https://myaccount.google.com/apppasswords, type a name such as `FlightLog`, and click
+   **Create**.
+3. Google shows a 16-letter password (`abcd efgh ijkl mnop`). Keep the page open; you need it in
+   the next step. It is shown only once. Never put it in the repository or a chat.
+
+**6.2 Run the setup script** (in `flightlog-blackbox`):
 
 ```bash
-.venv\Scripts\python -m uvicorn api:app --host 127.0.0.1 --port 8000
+.venv\Scripts\python scripts\setup_n8n.py
 ```
 
-Leave it running. Check it in the browser: http://localhost:8000/health should show `{"ok":true}`.
-http://localhost:8000/docs shows every endpoint and lets you upload a file by hand.
+It asks three things: your Gmail address, who should get the emails (press Enter for yourself;
+separate several addresses with commas), and the App Password (typing is hidden, spaces are fine).
+Then it creates the `flight-logs` folder, stores the password inside n8n (encrypted), imports the
+workflow and switches it on. The first run downloads n8n and takes a few minutes. It ends with
+"Done. The workflow is on."
+
+Run it again any time to change the addresses or the password.
 
 ---
 
-## 7. Start n8n and import the workflow
-
-n8n runs on your own PC through `npx`; nothing is installed globally.
-
-**7.1 Import the workflow** (once, in a second terminal inside `flightlog-blackbox`):
+## 7. Start it
 
 ```bash
-npx n8n@2.43.7 import:workflow --input=n8n/flightlog_workflow.json
+powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
-The first run downloads n8n and takes a few minutes. It ends with "Successfully imported 1 workflow."
+Three windows open: **FlightLog API**, **FlightLog n8n** and **FlightLog dashboard** (which opens
+http://localhost:8501 in your browser). Wait until the n8n window prints
+`Editor is now accessible via: http://localhost:5678`. Keep the windows open while you work;
+closing them stops the system.
 
-**7.2 Start n8n:**
+---
 
-```bash
-npx n8n@2.43.7
-```
+## 8. Use it
 
-Wait for `Editor is now accessible via: http://localhost:5678`. Leave this terminal running too:
-**two terminals stay open, the API and n8n.**
+Copy a `.bin` or `.tlog` file into the `flight-logs` folder. Within about 10 seconds an email
+arrives, for example *"[FlightLog] Critical: 2026-09-28 17-17-40.bin"*, with the summary, the
+flight map, the suggested parameter fixes and the Excel logbook attached. The dashboard shows the
+same flight with graphs and a map, and its **Fleet logbook** tab shows every flight so far.
 
-**7.3 Open http://localhost:5678.** The first time, n8n asks you to set up an owner account:
-email, name and a password of your choice. It only exists on your PC; it is not your Gmail
-password. Skip the survey and the license offer if they appear.
+- A file that is not a flight log (or an `.rlog`) is rejected and the email says why (E1).
+- The same file a second time is analysed again; the email notes "This exact file was already analysed" (E4).
+- **Offline test (E7):** close the **FlightLog API** window and drop a log. After 3 tries, 5 s
+  apart, the team gets *"[FlightLog] Analysis service offline"*. Run `start.ps1` again afterwards.
+- Drop new files only after n8n says it is ready: files already in the folder when n8n starts are
+  ignored.
 
-**7.4 Open the workflow.** On the Overview page click **FlightLog Black Box**. You see a yellow
-note and six boxes (nodes) joined by arrows:
+**Seeing the workflow (optional, for screenshots and the demo).** Open http://localhost:5678.
+The first time, n8n asks you to create its owner account: email, name and a password of your
+choice, which only exists on your PC. Then open **FlightLog Black Box** to see the nodes:
 
 | Node | Job |
 |---|---|
-| Drive trigger | Checks the Drive folder every minute for new files |
-| Download log | Downloads the new file |
-| Analyze log | Sends it to the API |
+| Watch log folder | Fires when a new file appears in `flight-logs` |
+| Read log | Reads the file |
+| Analyze log | Sends it to the API (one at a time, 3 tries) |
 | Attach reports | Turns the API's results into email attachments |
 | Email debrief | Emails the verdict to the team |
 | Email: service offline | Warns the team if the API did not answer |
 
-Double-clicking a node opens its settings. If the workflow list is empty, create a new workflow,
-click **⋯ → Import from File…** and pick `n8n/flightlog_workflow.json`.
+**Executions** (left menu) lists every run; click one to see what each node received and sent.
 
 ---
 
-## 8. Google Cloud: let n8n use your Drive and Gmail (once)
-
-This creates a "client ID", the key n8n uses to ask Google for permission. It is free. Ignore any
-"free trial is over / Upgrade" banner: these APIs do not need billing.
-
-**8.1 Project.** Go to https://console.cloud.google.com. Click the project button at the top left
-(next to "Google Cloud") → **New project** → name `FlightLog` → **Create** → **Select project**.
-
-**8.2 APIs.** In the top search bar type `Google Drive API` → open it → **Enable**.
-Then search `Gmail API` → **Enable**.
-
-**8.3 Consent screen.** Search `OAuth consent screen` (may be called *Google Auth Platform*) →
-**Get started**:
-- App name `FlightLog`, support email: your Gmail → **Next**
-- Audience: **External** → **Next**
-- Contact email: your Gmail → **Next** → tick the agreement → **Create**
-
-Then in the left menu **Audience** → **Test users** → **Add users** → your Gmail → **Save**.
-Every Google account that will sign in from n8n must be on this list.
-
-**8.4 Client ID.** Left menu **Clients** → **Create client**:
-- Application type: **Web application**, name `n8n`
-- **Authorized redirect URIs** → **Add URI** → `http://localhost:5678/rest/oauth2-credential/callback`
-- **Create**
-
-Copy the **Client ID** and **Client secret** now (or **Download JSON**): the secret is shown only
-once. **Never put them in the repository or in a chat.**
-
----
-
-## 9. Connect Google inside n8n
-
-**9.1 A test log in Drive.** In Google Drive create a folder `flight-logs` and upload one log into
-it. Open the folder: the address ends in `/folders/1AbC...xyz`. The part after `/folders/` is the
-**folder ID**.
-
-**9.2 Drive credential.** In n8n double-click **Drive trigger** →
-**Credential to connect with** → **Create new credential** → paste Client ID and Client secret →
-**Sign in with Google** → pick your Gmail. On "Google hasn't verified this app" click
-**Advanced → Go to FlightLog (unsafe)** (normal for your own test app) → tick every permission →
-**Continue**. n8n shows "Account connected". Close the credential window.
-
-**9.3 Folder.** Still in Drive trigger, at **Folder** replace `REPLACE_WITH_FOLDER_ID` with your
-folder ID, or switch **By ID** to **From list** and pick `flight-logs`. Go back to the canvas.
-
-**9.4** Double-click **Download log** → choose the same credential.
-
-**9.5 Gmail credential.** Double-click **Email debrief** → **Create new credential** (a Gmail
-OAuth2 API credential) → same Client ID and secret → **Sign in with Google** → same steps as 9.2.
-In **To**, replace `REPLACE_WITH_TEAM_EMAIL` with the team's addresses (comma-separated).
-
-**9.6** Double-click **Email: service offline** → same Gmail credential and **To**.
-
-**9.7 API address.** Double-click **Analyze log** → change the URL to
-`http://localhost:8000/analyze?inline=true`
-(the file says `host.docker.internal`, which is only right when n8n runs in Docker).
-
-**9.8** Click **Save** (Ctrl+S).
-
----
-
-## 10. Test and switch on
-
-**10.1 Test run.** Click **Execute workflow** at the bottom of the canvas. Each node turns green
-in turn. An email arrives, titled for example *"[FlightLog] Critical: 2026-09-28 17-17-40.bin"*,
-with `summary.txt` and `result.json` attached. Click a node to see the data it produced.
-
-**10.2 Offline test (E7).** Stop the API (Ctrl+C in its terminal) and execute again: Analyze log
-retries 3 times, 5 s apart, then *Email: service offline* is sent. Start the API again afterwards.
-
-**10.3 Switch on.** Flip the **Active** toggle at the top right (called **Publish** in some 2.x
-versions). From now on every new file in `flight-logs` is analysed and emailed within about a
-minute. Only files added after this point trigger it.
-
-**Before recording the demo:** Google sign-ins of apps in *Testing* mode expire after **7 days**.
-Open each credential in n8n and click **Sign in with Google** again shortly before recording.
-
----
-
-## 11. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `npx n8n` shows nothing for minutes | First run is downloading. If it ends with `ECONNRESET`, run it again. |
-| Drive trigger: "No data" | Wrong folder ID, or the folder is empty. |
-| Analyze log: connection refused | The API terminal is not running (section 6), or the URL still says `host.docker.internal`. |
-| Google: "Access blocked … has not completed verification" | Your Gmail is not in **Test users** (8.3). |
-| Google: "redirect_uri_mismatch" | The redirect URI in 8.4 does not exactly match `http://localhost:5678/rest/oauth2-credential/callback`. |
-| Gmail: insufficient permissions | A permission box was not ticked; reconnect the credential. |
-| Email arrives but says "Already processed" | That exact file was analysed before (E4). Delete `output/processed.json` to reset during testing. |
-| PowerShell: "running scripts is disabled" | Run the `Set-ExecutionPolicy` line from section 4. |
+| `npx` shows nothing for minutes | The first run is downloading n8n. If it ends with `ECONNRESET`, run it again. |
+| No email after dropping a file | Is the n8n window ready? Files that were already in the folder at start-up are ignored, so copy the file in again. Check **Executions** in n8n. |
+| Email "Analysis service offline" | The API window is closed or crashed. Run `start.ps1` again. |
+| n8n window shows `EBUSY: resource busy or locked` | Windows locked the file while it was being copied. The workflow uses polling to avoid this; if you set it up before 21 Oct, run `setup_n8n.py --keep-credential`, then restart. |
+| Email node error "Invalid login" / 535 | Wrong App Password, or 2-Step Verification is off. Make a new App Password and run `setup_n8n.py` again. |
+| PowerShell: "running scripts is disabled" | Use the `powershell -ExecutionPolicy Bypass -File ...` form shown above. |
 
-After editing the workflow in n8n you can check it against n8n's own node definitions:
+After editing the workflow you can check it against n8n's own node definitions:
 
 ```bash
 node n8n/validate_workflow.js %LOCALAPPDATA%\npm-cache\_npx\<hash>\node_modules n8n/flightlog_workflow.json
 ```
 
 (`<hash>` is the folder under `npm-cache\_npx` that contains `node_modules\n8n`.)
+
+**Why `127.0.0.1` and not `localhost`?** Node.js 24 resolves `localhost` to the IPv6 address `::1`,
+while the API listens on IPv4 `127.0.0.1`. With `localhost`, n8n cannot reach the API.
+
+---
+
+## 10. How this was tested
+
+The whole chain was run on a separate n8n instance, with a local test mail server standing in for
+Gmail (nothing was sent over the internet):
+
+| Dropped into the folder | Email received |
+|---|---|
+| `.bin` (28-09 flight) | "Critical", summary.txt + result.json, same findings as the command line |
+| `.tlog` (15-10 flight) | "Critical", marked telemetry, with the flight date |
+| `.rlog` | "Rejected" (E1) with the reason |
+| `.bin` with the API stopped | "Analysis service offline" after 3 retries (E7) |
+
+Three files dropped at once produced three emails in about 5 seconds.
+
+---
+
+## 11. Optional: Google Drive instead of a local folder
+
+`n8n/flightlog_workflow_gdrive.json` watches a Google Drive folder and sends through the Gmail API
+instead. It needs a Google Cloud project with an OAuth client, and its sign-ins expire every 7 days
+in testing mode, so the local-folder version above is recommended. To use it anyway: create a
+Google Cloud project, enable the Drive and Gmail APIs, set up the consent screen (External, add
+yourself as a test user), and create a *Web application* OAuth client with the redirect URI
+`http://localhost:5678/rest/oauth2-credential/callback`. Then import the file in n8n and connect
+Google Drive and Gmail credentials in its four Google nodes. In **Analyze log**, use
+`http://127.0.0.1:8000/analyze?inline=true`.
 
 ---
 
@@ -363,15 +347,13 @@ comes from `blackbox.analyze(path)` (an `AnalysisResult`; `.to_dict()` gives the
 ## 13. Status
 
 **Done**
-- Core: validation (E1–E5), `.bin` and `.tlog` parsing, flight windows, 13 checks, verdict.
+- Core: validation (E1–E5), `.bin` and `.tlog` parsing, flight windows, 16 checks, verdict, recommended actions, HTML email, flight map, parameter fix file, comparison with earlier flights, pre-flight GO / NO-GO, tamper-evident ledger.
 - API with download endpoint, duplicate registry and request lock.
-- n8n workflow, imported and validated against n8n 2.43.7's node definitions.
-- 46 tests on synthetic logs; tested on the team's real logs (2 `.bin`, 17 `.tlog`, 15 `.rlog`).
+- n8n workflow (watched folder → API → Gmail), set up by one script and tested end to end.
+- 88 tests (83 run on synthetic logs); tested on the team's real logs (3 `.bin`, 13 `.tlog`, 12 `.rlog`).
 
 **Still to do**
-- Excel logbook (Flights, Findings, Exceptions, Trends) and E6 (logbook open in Excel).
-- PowerPoint debrief (8 slides) and the plots.
-- Streamlit upload page (`app.py`): call `blackbox.analyze()` or `POST /analyze`.
+- PowerPoint debrief (8 slides). Optional: the dashboard and email already cover the same content.
 - Tune `thresholds.yaml` on 2–3 clean flights of the airframe in the report and record the values.
 - Report, workflow diagrams, screenshots, demo video.
 

@@ -30,6 +30,8 @@ def main(argv=None):
         for c in res.checks:
             val = "" if c.value is None else f"{c.value:g} {c.unit}".strip()
             print(f"  {c.id:>2}. {c.name:<26} {c.status.value:<13} {val:<16} {c.detail}")
+        for i, a in enumerate(res.actions, 1):
+            print(f"  action {i}: {a}")
         for n in res.notes:
             print(f"  note: {n}")
     return 0

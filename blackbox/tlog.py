@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from pymavlink import mavutil
 
-from .parse import ParsedLog
+from .parse import ParsedLog, airframe_id, firmware
 
 WANTED = [
     "HEARTBEAT", "VIBRATION", "SYS_STATUS", "POWER_STATUS", "VFR_HUD", "GLOBAL_POSITION_INT",
@@ -87,6 +87,7 @@ def load(path):
     _simple(tables, "POWR", by_type["POWER_STATUS"], _powr_rows)
     _simple(tables, "XKF4", by_type["EKF_STATUS_REPORT"], _ekf_rows)
     _simple(tables, "RCOU", [(t, d) for t, d in by_type["SERVO_OUTPUT_RAW"] if d.get("port", 0) == 0], _rcou_rows)
+    _simple(tables, "POS", [(t, d) for t, d in by_type["GLOBAL_POSITION_INT"] if d["lat"] or d["lon"]], _pos_rows)
     if by_type["PARAM_VALUE"]:
         parsed.params = {str(d["param_id"]): float(d["param_value"]) for _, d in by_type["PARAM_VALUE"]}
     _ctun(by_type, tables, parsed.params)
@@ -147,10 +148,10 @@ def _statustext(msgs, tables, parsed):
             if pat.match(text):
                 errs.append({"t": t, "Subsys": sub, "ECode": code, "Message": text})
                 break
-        if parsed.firmware is None and re.match(r"Ardu\w+ V\d", text):
-            parsed.firmware = text
     if texts:
         tables["MSG"] = _frame(texts)
+        parsed.firmware = firmware(t["Message"] for t in texts)
+        parsed.airframe = airframe_id(t["Message"] for t in texts)
     if errs:
         tables["ERR"] = _frame(errs)
 
@@ -177,6 +178,10 @@ def _ekf_rows(t, d):
     # ArduPilot sends the same innovation test ratios it logs in XKF4.
     yield {"t": t, "C": 0, "SV": d["velocity_variance"], "SP": d["pos_horiz_variance"],
            "SH": d["pos_vert_variance"], "SM": d["compass_variance"]}
+
+
+def _pos_rows(t, d):
+    yield {"t": t, "Lat": d["lat"] * 1e-7, "Lng": d["lon"] * 1e-7, "RelHomeAlt": d["relative_alt"] / 1000.0}
 
 
 def _rcou_rows(t, d):

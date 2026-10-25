@@ -11,7 +11,7 @@ import pytest
 
 from blackbox import analyze
 from blackbox.checks import Status
-from blackbox.pipeline import ANALYSED, DUPLICATE, NO_FLIGHT, REJECTED
+from blackbox.pipeline import ANALYSED, NO_FLIGHT, REJECTED
 
 DATA = Path(__file__).parent / "data"
 
@@ -92,12 +92,13 @@ def test_t6_not_a_log(tmp_path, cfg):
     assert res.status == REJECTED and res.exception_id == "E1"
 
 
-def test_t7_duplicate(make_log, cfg):
-    path = make_log()
+def test_t7_duplicate_is_analysed_again_with_a_note(make_log, cfg):
+    path = make_log(weak_motor_at=50.0)
     first = analyze(path, cfg)
-    again = analyze(path, cfg, known_hashes={first.sha256: "2026-10-18"})
-    assert again.status == DUPLICATE and again.exception_id == "E4"
-    assert "2026-10-18" in again.reason
+    again = analyze(path, cfg, known_hashes={first.sha256: "2026-10-18 as a.bin"})
+    assert again.status == ANALYSED and again.verdict == first.verdict == "Critical"
+    assert again.repeat_of == "2026-10-18 as a.bin"
+    assert any("already analysed (2026-10-18 as a.bin)" in n for n in again.notes)
 
 
 def test_t8_bench_log_never_armed(make_log, cfg):

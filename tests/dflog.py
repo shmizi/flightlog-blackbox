@@ -1,4 +1,4 @@
-"""Write synthetic ArduPilot DataFlash logs for tests.
+﻿"""Write synthetic ArduPilot DataFlash logs for tests.
 
 Message formats and labels are copied from ArduPilot master LogStructure
 headers, so pymavlink's DFReader parses these files exactly like a real
@@ -12,7 +12,7 @@ import numpy as np
 
 STRUCT = {"b": "b", "B": "B", "h": "h", "H": "H", "i": "i", "I": "I", "f": "f", "d": "d",
           "n": "4s", "N": "16s", "Z": "64s", "c": "h", "C": "H", "e": "i", "E": "I",
-          "L": "i", "M": "B", "q": "q", "Q": "Q"}
+          "L": "i", "M": "B", "q": "q", "Q": "Q", "a": "64s"}   # 'a' = int16[32], packed as 64 bytes
 SCALE = {"c": 100, "C": 100, "e": 100, "E": 100, "L": 1e7}
 
 FORMATS = {
@@ -31,6 +31,11 @@ FORMATS = {
     "XKF4": ("QBcccccfffHBIHb", "TimeUS,C,SV,SP,SH,SM,SVT,errRP,OFN,OFE,FS,TS,SS,GPS,PI"),
     "RCOU": ("QHHHHHHHHHHHHHH", "TimeUS,C1,C2,C3,C4,C5,C6,C7,C8,C9,C10,C11,C12,C13,C14"),
     "VISP": ("QQIffffffffBBb", "TimeUS,RTimeUS,CTimeMS,PX,PY,PZ,R,P,Y,PErr,AErr,Rst,Ign,Q"),
+    "GPS": ("QBBIHBcLLfffffB", "TimeUS,I,Status,GMS,GWk,NSats,HDop,Lat,Lng,Alt,Spd,GCrs,VZ,Yaw,U"),
+    "POS": ("QLLfff", "TimeUS,Lat,Lng,Alt,RelHomeAlt,RelOriginAlt"),
+    "MAG": ("QBfff", "TimeUS,I,MagX,MagY,MagZ"),
+    "ISBH": ("QHBBHHQf", "TimeUS,N,type,instance,mul,smp_cnt,SampleUS,smp_rate"),
+    "ISBD": ("QHHaaa", "TimeUS,N,seqno,x,y,z"),
 }
 
 
@@ -58,7 +63,9 @@ class DFWriter:
         args = []
         for c, lab in zip(fmt, labels.split(",")):
             v = vals.get(lab, 0)
-            if c in "nNZ":
+            if c == "a":
+                v = struct.pack("<32h", *(list(v) + [0] * 32)[:32]) if v else b""
+            elif c in "nNZ":
                 v = v.encode() if isinstance(v, str) else b""
             elif c in SCALE:
                 v = int(round(v * SCALE[c]))
@@ -86,6 +93,7 @@ def flight(
     weak_motor_at=None,        # T4: motor 1 weakens here, fails 10 s later and the drone crashes
     hover_thr=0.42,            # CTUN.ThO in hover; logged ThH follows it but caps at 0.6875 like ArduPilot
     hard_landing=False,        # fast descent and impact at touchdown
+    impact_g=6.0,              # peak acceleration of that hard landing
     att_err=1.0,               # attitude tracking error amplitude (deg)
     ekf_sp=None,               # (start, end, value) to hold XKF4.SP high on core 0
     errors=(),                 # extra (t, subsys, ecode) ERR records
@@ -96,6 +104,10 @@ def flight(
     vcc_nan=False,             # flight controller without board-voltage sensing (POWR.Vcc NaN)
     params=None,               # extra PARM values, e.g. {"MOT_BAT_VOLT_MAX": 25.2}
     cells=CELLS,
+    board="TESTF405 00000001 00000002 0000ABCD",   # boot line naming the board and CPU serial
+    gps=False,                 # GPS fix (real date) and POS track for the map
+    mag_slope=None,            # compass interference, mGauss per amp along the Earth's field
+    vib_peak_hz=None,          # IMU batch samples with a vibration peak at this frequency
     seed=1,
 ):
     rng = np.random.default_rng(seed)
@@ -140,6 +152,8 @@ def flight(
 
     # Static records -----------------------------------------------------------
     rec(0.05, "MSG", Message="ArduCopter V4.5.7 (2a3dc4b7)")
+    if board:
+        rec(0.05, "MSG", Message=board)
     rec(0.06, "MODE", Mode=mode, ModeNum=mode, Rsn=0)
     for i, fn in enumerate((33, 34, 35, 36), start=1):
         rec(0.07, "PARM", Name=f"SERVO{i}_FUNCTION", Value=fn)
@@ -238,7 +252,7 @@ def flight(
     # 25 Hz IMU, two instances ---------------------------------------------------
     impact = None
     if hard_landing:
-        impact = (TOUCHDOWN, 6.0)
+        impact = (TOUCHDOWN, impact_g)
     if crash_at:
         impact = (crash_at + 1.0 + CRUISE_ALT / 3.0, 8.0)
     for t in np.arange(0.02, end, 0.04):
@@ -259,6 +273,42 @@ def flight(
             if ext_nav_gap and ext_nav_gap[0] <= t < ext_nav_gap[0] + ext_nav_gap[1]:
                 continue
             rec(t, "VISP", RTimeUS=int(t * 1e6), PZ=-alt_actual(t), PErr=0.05, Q=90)
+
+    # 5 Hz GPS and position: a 10 m circle over Pune, GPS week 2437 ---------------
+    if gps:
+        for t in np.arange(0.2, end, 0.2):
+            t = float(t)
+            ang = (t - TAKEOFF) / 20.0 if airborne(t) else 0.0
+            lat, lng = 18.5588 + 9e-5 * np.sin(ang), 73.7430 + 9e-5 * (np.cos(ang) - 1)
+            rec(t, "GPS", Status=3, GMS=int(100_000_000 + t * 1000), GWk=2437, NSats=14, HDop=0.8,
+                Lat=lat, Lng=lng, Alt=560 + alt_actual(t))
+            rec(t, "POS", Lat=lat, Lng=lng, Alt=560 + alt_actual(t), RelHomeAlt=alt_actual(t),
+                RelOriginAlt=alt_actual(t))
+
+    # 10 Hz compass: Earth's field plus interference proportional to current ----
+    if mag_slope is not None:
+        earth = np.array([300.0, -300.0, 100.0])
+        unit = earth / np.linalg.norm(earth)
+        for t in np.arange(0.1, end, 0.1):
+            t = float(t)
+            curr = 25.0 if airborne(t) else (1.5 if armed(t) else 0.4)
+            b = earth + unit * mag_slope * curr + rng.normal(0, 2, 3)
+            rec(t, "MAG", I=0, MagX=b[0], MagY=b[1], MagZ=b[2])
+
+    # IMU batch sampler: 1024 gyro samples at 1 kHz once a second while flying --
+    if vib_peak_hz:
+        n_batch = 0
+        for t in np.arange(TAKEOFF + 4, DESCENT - 1, 1.0):
+            t = float(t)
+            k = np.arange(1024)
+            samples = [500 * np.sin(2 * np.pi * vib_peak_hz * k / 1000 + ph) + rng.normal(0, 20, 1024)
+                       for ph in (0.0, 1.0, 2.0)]
+            rec(t, "ISBH", N=n_batch, type=1, instance=0, mul=1000, smp_cnt=1024, SampleUS=int(t * 1e6),
+                smp_rate=1000.0)
+            for seq in range(32):
+                x, y, z = (np.round(s[seq * 32:(seq + 1) * 32]).astype(int).tolist() for s in samples)
+                rec(t + 0.0001 * (seq + 1), "ISBD", N=n_batch, seqno=seq, x=x, y=y, z=z)
+            n_batch += 1
 
     w = DFWriter()
     for t, name, f in sorted(recs, key=lambda r: r[0]):

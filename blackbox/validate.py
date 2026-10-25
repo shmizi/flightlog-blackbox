@@ -1,6 +1,7 @@
-"""File-level validation that runs before parsing (E1, E4) and file identity."""
+"""File-level validation that runs before parsing (E1) and the file hash used for E4."""
 
 import hashlib
+import re
 import struct
 
 # Every DataFlash record starts with 0xA3 0x95; the first record is FMT (0x80).
@@ -8,7 +9,10 @@ HEADER = b"\xa3\x95\x80"
 MAVLINK_MAGIC = (0xFE, 0xFD)                 # MAVLink v1, v2
 YEAR_2000, YEAR_2100 = 946684800, 4102444800
 
-DATAFLASH, TELEMETRY, RAW_LINK = "dataflash", "telemetry", "raw"
+DATAFLASH, TELEMETRY, RAW_LINK, PARAMS = "dataflash", "telemetry", "raw", "params"
+
+# Mission Planner "NAME,VALUE" (or space/tab separated) and QGroundControl "sys comp NAME VALUE type".
+PARAM_LINE = re.compile(r"^(?:\d+\s+\d+\s+)?[A-Z][A-Z0-9_]{1,16}[\s,]+[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s+\d+)?\s*$")
 
 
 def log_kind(path):
@@ -30,7 +34,23 @@ def log_kind(path):
     # An .rlog can open with serial noise or boot text ("Init Gyro**") before the first frame.
     if _has_mavlink_frames(head):
         return RAW_LINK
+    if _is_param_file(head):
+        return PARAMS
     return None
+
+
+def _is_param_file(head):
+    """A parameter list saved from Mission Planner or QGroundControl (plain text)."""
+    try:
+        text = head.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    lines = text.splitlines()
+    if len(head) >= 4096:          # only a full read can end in a line cut in half
+        lines = lines[:-1]
+    lines = [ln.strip() for ln in lines]
+    lines = [ln for ln in lines if ln and not ln.startswith("#")]
+    return len(lines) >= 3 and all(PARAM_LINE.match(ln) for ln in lines[:20])
 
 
 def _has_mavlink_frames(buf, chain=5):
@@ -60,24 +80,9 @@ def _has_mavlink_frames(buf, chain=5):
     return False
 
 
-def is_dataflash(path):
-    return log_kind(path) == DATAFLASH
-
-
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def find_duplicate(digest, known_hashes):
-    """E4: return when the file was first processed, or None.
-
-    known_hashes maps SHA-256 -> processed date; the Excel logbook's
-    Flights sheet supplies it.
-    """
-    if not known_hashes:
-        return None
-    return known_hashes.get(digest)

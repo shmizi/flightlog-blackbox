@@ -30,5 +30,5 @@ def cells_for(cfg, instance, params=None, volt_at_arm=None):
         if not volt_at_arm or 3.0 <= volt_at_arm / n <= 4.45:
             return n, "MOT_BAT_VOLT_MAX"
     if volt_at_arm:
-        return max(1, round(volt_at_arm / 4.0)), "voltage at arming (set cells in thresholds.yaml to be sure)"
+        return max(1, round(volt_at_arm / 4.0)), "voltage at arming; pin it in thresholds.yaml"
     return None, "unknown"

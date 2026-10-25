@@ -11,7 +11,27 @@ from pymavlink import DFReader
 TYPES = [
     "VIBE", "BAT", "POWR", "CTUN", "ATT", "XKF4", "NKF4", "RCOU", "IMU",
     "ERR", "EV", "ARM", "MODE", "MSG", "PARM", "VISP", "VISV", "VISO",
+    "GPS", "POS", "MAG", "ISBH", "ISBD",
 ]
+
+GPS_EPOCH = 315964800      # 1980-01-06 in Unix time
+GPS_LEAP_SECONDS = 18      # GPS time runs ahead of UTC by this much (since 2017)
+BOARD_LINE = re.compile(r"^([A-Za-z0-9_\-]+) ([0-9A-F]{8} [0-9A-F]{8} [0-9A-F]{8})\s*$")
+FIRMWARE_LINE = re.compile(r"Ardu\w+ V\d")
+
+
+def firmware(messages):
+    """'ArduCopter V4.5.7 (...)' from the boot messages, or None."""
+    return next((str(t) for t in messages if FIRMWARE_LINE.match(str(t))), None)
+
+
+def airframe_id(messages):
+    """'BOTWINGF405 …38303936' from the boot message that names the board and its unique CPU ID."""
+    for text in messages:
+        m = BOARD_LINE.match(str(text))
+        if m:
+            return f"{m.group(1)} …{m.group(2)[-8:]}"
+    return None
 
 
 @dataclass
@@ -21,6 +41,7 @@ class ParsedLog:
     error: str | None = None                     # exception text if the parser stopped early
     bad_bytes: int = 0                           # bytes the reader had to skip as corrupt
     firmware: str | None = None
+    airframe: str | None = None                  # board name + CPU serial: the same drone across logs
     source: str = "dataflash"                    # "dataflash" (.bin) or "telemetry" (.tlog)
     start_unix: float | None = None              # wall-clock start, when the log carries it
     max_link_gap_s: float = 0.0                  # telemetry only: longest gap in autopilot heartbeats while armed
@@ -77,8 +98,20 @@ def load(path):
         p = parsed.tables["PARM"]
         parsed.params = {str(n): float(v) for n, v in zip(p["Name"], p["Value"])}
     if "MSG" in parsed.tables:
-        for text in parsed.tables["MSG"]["Message"]:
-            if re.match(r"Ardu\w+ V\d", str(text)):
-                parsed.firmware = str(text)
-                break
+        parsed.firmware = firmware(parsed.tables["MSG"]["Message"])
+        parsed.airframe = airframe_id(parsed.tables["MSG"]["Message"])
+    parsed.start_unix = _gps_start_time(parsed)
     return parsed
+
+
+def _gps_start_time(parsed):
+    """Wall-clock time of the log start, from the first GPS fix (week + ms of week)."""
+    gps = parsed.tables.get("GPS")
+    if gps is None or not {"Status", "GWk", "GMS"} <= set(gps.columns):
+        return None
+    fix = gps[(gps["Status"] >= 3) & (gps["GWk"] > 0)]
+    if fix.empty:
+        return None
+    row = fix.iloc[0]
+    unix = GPS_EPOCH + float(row["GWk"]) * 604800 + float(row["GMS"]) / 1000 - GPS_LEAP_SECONDS
+    return unix - (float(row["t"]) - parsed.log_start)

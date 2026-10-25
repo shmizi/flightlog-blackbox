@@ -1,4 +1,4 @@
-from .checks import Status
+from .checks import FINDING, Status
 
 HEALTHY, WARNING, CRITICAL = "Healthy", "Warning", "Critical"
 
@@ -15,5 +15,5 @@ def decide(results):
 
 def findings(results):
     """Warning and Critical results, Critical first, for the Findings sheet and debrief table."""
-    bad = [r for r in results if r.status in (Status.CRITICAL, Status.WARNING)]
+    bad = [r for r in results if r.status in FINDING]
     return sorted(bad, key=lambda r: (r.status != Status.CRITICAL, r.id))

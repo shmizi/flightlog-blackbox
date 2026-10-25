@@ -73,3 +73,13 @@ checks:
   external_nav:            # 13. longest gap in VISP/VISV/VISO while airborne, s (team-set)
     warning: 0.2
     critical: 0.5
+  configuration:           # 14. battery parameters vs the pack actually fitted
+    min_failsafe_cell_v: 3.2   # BATT_LOW_VOLT below this per cell is too late to save the flight
+  vibration_spectrum:      # 15. FFT of the IMU batch samples (needs INS_LOG_BAT_MASK = 1)
+    prominence: 6          # a peak this many times the median noise floor counts as dominant
+    min_hz: 20
+    max_hz: 450
+  compass_interference:    # 16. field change at full current, % of the Earth's field (ArduPilot compassmot)
+    warning: 30
+    critical: 60
+    min_current_span_a: 5

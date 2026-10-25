@@ -1,4 +1,4 @@
-"""Targeted tests for windowing, instance handling, E3 and individual checks."""
+﻿"""Targeted tests for windowing, instance handling, E3 and individual checks."""
 
 import shutil
 
@@ -114,12 +114,12 @@ def test_board_without_vcc_sensing(make_log, cfg):
 def test_cells_auto_from_mot_bat_volt_max(make_log, cfg):
     res = analyze(make_log(cells=6, params={"MOT_BAT_VOLT_MAX": 25.2}), cfg)
     c = check(res, 3)
-    assert c.status == Status.PASS and "6S from MOT_BAT_VOLT_MAX" in c.detail
+    assert c.status == Status.PASS and "6S pack (cell count from MOT_BAT_VOLT_MAX)" in c.detail
 
 
 def test_cells_auto_from_voltage_and_pinned(make_log, cfg):
     path = make_log(cells=6)
-    assert "6S from voltage at arming" in check(analyze(path, cfg), 3).detail
+    assert "6S pack (cell count from voltage at arming" in check(analyze(path, cfg), 3).detail
     cfg["battery"]["cells"] = 4                    # pinned wrong on purpose: flagged, not hidden
     c = check(analyze(path, cfg), 3)
     assert "is cells=4 right?" in c.detail

@@ -11,3 +11,11 @@ tests/data/*
 !tests/data/.gitkeep
 *.rlog
 
+flight-logs/
+
+# LaTeX build files
+docs/report/*.aux
+docs/report/*.log
+docs/report/*.toc
+docs/report/*.out
+docs/report/*.zip

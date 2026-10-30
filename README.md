@@ -66,8 +66,7 @@ This opens three windows: the API, n8n and the dashboard (http://localhost:8501)
 (a few minutes on the first run), then drop a `.bin`, `.tlog` or `.param` into `flight-logs\` or upload it on
 the dashboard. Close the three windows to stop.
 
-New to the project? [PROJECT_GUIDE.md](PROJECT_GUIDE.md) walks through everything step by step, and
-[HANDOFF.md](HANDOFF.md) lists what is done and what comes next.
+New to the project? [PROJECT_GUIDE.md](PROJECT_GUIDE.md) walks through everything step by step.
 
 ## How it works
 

@@ -6,8 +6,7 @@ logbook of every flight. Nobody has to open a graph.
 
 ![How FlightLog Black Box works](docs/figures/workflow_proposed.png)
 
-Built for the CA3 Software Automation Lab (project 29) by Aarushi Rudra, Zahra Modi and Harsh Narain,
-around the drone our team flies for NIDAR.
+Built for the CA3 Software Automation Lab around the drone our team flies for NIDAR.
 
 ---
 
